@@ -25,7 +25,7 @@ if __name__ == "__main__":
     while True:
         try:
             if len(server.clients) > 0 or DEBUG:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
                 data_to_broadcast = {
                     "timestamp": timestamp,
                 }
