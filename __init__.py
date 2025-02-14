@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+from typing import Any, Tuple, Callable
 from dataclasses import dataclass, field
 from queue import Queue
 import threading
@@ -12,7 +12,7 @@ Address = Tuple[str | int, str | int]
 
 
 @dataclass
-class Client:
+class ServerClient:
     client_socket: socket.socket
     data_queue: Queue[dict[str, Any]]
     address: Address
@@ -35,7 +35,7 @@ class Client:
 @dataclass
 class Server:
     socket_address: Address
-    clients: list[Client] = field(default_factory=list)
+    clients: list[ServerClient] = field(default_factory=list)
     accept_connections_thread: threading.Thread | None = None
 
     def start(self):
@@ -83,7 +83,7 @@ class Server:
             logger.info(f"Listening on {self.socket_address}")
             client_socket, address = server_socket.accept()
             logger.info(f"New connection from {address}")
-            client = Client(
+            client = ServerClient(
                 client_socket=client_socket, data_queue=Queue(), address=address
             )
             self.clients.append(client)
@@ -91,3 +91,66 @@ class Server:
                 target=client.handler, args=(), daemon=True
             )
             client.thread.start()
+
+
+class Client:
+    def __init__(self, server_address: tuple[str, int], callback: Callable[[dict], Any]):
+        self.server_address = server_address
+        self.callback = callback
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connected = False
+        self.receive_thread: threading.Thread | None = None
+        self.buffer = ''
+
+    def connect(self) -> None:
+        """Establishes a connection to the server and starts the receiver thread."""
+        try:
+            self.socket.connect(self.server_address)
+            self.connected = True
+            self.start_receiver()
+            logger.info(f"Connected to server at {self.server_address}")
+        except Exception as e:
+            logger.error(f"Failed to connect to server: {e}")
+            raise
+
+    def start_receiver(self) -> None:
+        """Starts the receiver thread to listen for incoming messages from the server."""
+        self.receive_thread = threading.Thread(target=self.receive_loop, daemon=True)
+        self.receive_thread.start()
+
+    def receive_loop(self) -> None:
+        """Continuously receives data from the server, processes JSON messages, and triggers the callback."""
+        decoder = json.JSONDecoder()
+        while self.connected:
+            try:
+                data = self.socket.recv(4096*4)  # Read up to 4096 bytes
+                if not data:
+                    logger.info("Server closed the connection.")
+                    break
+                self.buffer += data.decode('utf-8')
+                # Process all complete JSON messages in the buffer
+                while self.buffer:
+                    try:
+                        obj, idx = decoder.raw_decode(self.buffer)
+                        self.callback(obj)
+                        self.buffer = self.buffer[idx:].lstrip()
+                    except json.JSONDecodeError:
+                        # Incomplete JSON data, wait for more data
+                        break
+            except (ConnectionError, OSError) as e:
+                logger.error(f"Connection error: {e}")
+                break
+        self.connected = False
+        self.socket.close()
+        logger.info("Disconnected from server.")
+
+    def close(self) -> None:
+        """Closes the connection and stops the receiver thread."""
+        self.connected = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception as e:
+                logger.error(f"Error closing socket: {e}")
+        if self.receive_thread:
+            self.receive_thread.join()
